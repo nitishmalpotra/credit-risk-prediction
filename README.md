@@ -1,10 +1,13 @@
 # Credit Risk Prediction
 
-### Number of Instances: 31375 
-### Number of Attributes: 39
+#### Number of Instances: 31375 
+#### Number of Attributes: 39
+#### Tech Stack; R, RStudio
+#### Models Used; Support-vector Machine (SVM), Random Forest, Gradient Boosting Machine (GBM)
+
+---
 
 ### Attribute information:
-
 | Variable | Description |
 |---|--------------------|
 | ID | client ID |
