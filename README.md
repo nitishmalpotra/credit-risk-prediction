@@ -6,7 +6,7 @@
 ### Attribute information:
 
 | Variable | Description |
-|-----|--------------------|
+|---|--------------------|
 | ID | client ID |
 | LIMIT | credit Limit of a client in dollars |
 | GENDER | 1 = male, 2 = female |
