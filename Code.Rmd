@@ -1,0 +1,1044 @@
+---
+title: "Loan Default Prediction"
+author: "NM"
+date: "25/11/2021"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+---
+
+## Install and load required libraries
+```{r}
+# install required libraries
+# install.packages(c("tidyverse", "FSelector", caTools", "ROSE", "e1071", "randomForest", "caret", "CustomerScoringMetrics", "gbm", "pROC"))         
+
+library(tidyverse) #for data manipulation and operations
+library(FSelector) #for feature selection
+library(caTools) #for data partition
+library(ROSE) #for data balancing
+library(e1071) #for SVM
+library(randomForest) #for random forest
+library(caret) #for confusion matrix
+library(CustomerScoringMetrics) #for gain values
+library(gbm) #for gbm
+library(pROC) #for model evaluation and calculating AUC
+
+```
+
+---
+
+## Load data
+```{r}
+# import data
+df <- read_csv("data.csv")
+```
+
+---
+
+## Data dictionary
+Attribute | Description
+--------|------------------------------
+ID | client ID
+LIMIT | credit Limit of a client in dollars
+GENDER | 1 = male, 2 = female
+EDUCATION | 1 = graduate school, 2 = university, 3 = high school, 0 = others, 4 = others, 5 = special program, 6 = unknown
+MARRIAGE | marital status (1 = married, 2 = single, 3 = divorced, 0 = others)
+AGE | age in years
+AGE_CTG | age category (1 = from 20 to 34; 2 = from 35 to 49; 3 = from 50 to 64; 4 = 65 and over)
+PY1 | the repayment status in period X
+PY2 | the repayment status in period (X-1)
+PY3 | the repayment status in period (X-2)
+PY4 | the repayment status in period (X-3)
+PY5 | the repayment status in period (X-4)
+PY6 | the repayment status in period (X-5)
+BILL1 | bill statement in period X
+BILL2 | bill statement in period (X-1)
+BILL3 | bill statement in period (X-2)
+BILL4 | bill statement in period (X-3)
+BILL5 | bill statement in period (X-4)
+BILL6 | bill statement in period (X-5)
+PYAMT1 | amount paid in period X
+PYAMT2 | amount paid in period (X-1)
+PYAMT3 | amount paid in period (X-2)
+PYAMT4 | amount paid in period (X-3)
+PYAMT5 | amount paid in period (X-4)
+PYAMT6 | amount paid in period (X-5)
+SATISFACTION | service satisfaction (0 = not satisfactory; 1 = normal; 2 = satisfactory)
+FREQTRANSACTION | how frequently client visits Universal Plus (0 = rarely, 1 = regularly)
+PHONE | whether the client has a landline or not (0 = no phone; 1 = yes)
+DEPENDENT | whether the client has children or not (0 = no child; 1 = yes)
+CREDITCRD | number of credit cards
+RSTATUS | current accommodation status (0 = shared lease, 1 = homeowner,  2 = rent)
+OTH_ACCOUNT | whether the client has several bank accounts (0 = no, 1 = yes)
+CAR | whether the client has a car (0 = no, 1 = yes)
+YEARSINADD | years in the current address (3 = three years or below, 4 = four years, ..., 7 = seven years or above)
+SECONDHOME | whether the client has another address (0 = no, 1 = yes)
+EMPLOYMENT | whether the client has a permanent job (0 = no, 1 = yes)
+NEW_CSTM | whether the client joined Universal Plus in the last two years or s/he is an existing customer (0 = joined in the last two years, 1 = existing customer)
+CM_HIST | criminal history, e.g. insurance fraud (0 = no, 1 = yes)
+CLASS | 0 = the client paid the credit back; 1 = the client did not pay the credit and went into default
+
+---
+
+**PY1, PY2, PY3, PY4, PY5, PY6 : History of past payments**
+
+Categories in variables PY1, PY2, PY3, PY4, PY5, and PY6 are:
+
+* -2: No consumption/transaction
+* -1: Paid in full
+* 0: small payment
+* 1 = payment delay for one period
+* 2 = payment delay for two periods;...
+* 8 = payment delay for eight periods
+* 9 = payment delays for nine periods and above
+
+---
+
+**BILL1, BILL2, BILL3, BILL4, BILL5, BILL6: Amount of bill statement in dollars**
+
+---
+
+**PYAMT1, PYAMT2, PYAMT3, PYAMT4, PYAMT5, PYAMT6: Amount of previous payment in dollars**
+
+---
+
+## Explore data
+```{r}
+# check structure
+str(df)
+
+# check summary
+summary(df)
+
+# check first 5 records
+head(df)
+```
+
+---
+
+## Clean data
+
+### Remove missing and duplicate values
+```{r}
+# recalculate NA values in AGE_CTG
+df$AGE[which(is.na(df$AGE_CTG))]
+
+# assigning AGE_CAT to AGE (based on categories from data dictionary)
+df$AGE_CTG[which(is.na(df$AGE_CTG))] <- c(1, 3, 1, 1)
+
+# count of records with missing values
+sum(is.na(df))
+# remove records with missing values
+df.clean <- na.omit(df)
+
+# count of duplicate records
+nrow(df.clean) - nrow(unique(df.clean))
+# remove duplicate records
+df.clean <- unique(df.clean)
+
+# count unknowns (6 = unknowns in EDUCATION)
+sum(df.clean$EDUCATION == 6)
+# remove records with EDUCATION = 6
+df.clean <- filter(df.clean, EDUCATION != 6)
+```
+
+### Check and remove outliers
+
+**Assumption(s)**
+
+- BILL (1,2,3,4,5,6)
+- PYAMT (1,2,3,4,5,6)
+- PY (1,2,3,4,5,6)
+
+are accurately recorded based on client's usage, payments, and any manual update. Therefore, only checking `LIMIT` variable for outliers.
+```{r}
+# check outliers in LIMIT
+ggplot(data = df.clean) + geom_boxplot(aes(y = LIMIT))
+# remove record(s) with LIMIT > 850000
+df.clean <- filter(df.clean, LIMIT < 850000)
+```
+
+### How much data are we left with?
+```{r}
+nrow(df.clean) / nrow(df)
+```
+
+---
+
+**Data Cleaning Steps**
+
+---
+
+- Re-calculate `NA` values in `AGE_CAT` based on `AGE`
+- Remove all the records with `NA` values
+- Remove duplicate records
+- remove records with `6` under `EDUCATION`
+- Check for outliers in `LIMIT` using a boxplot, Remove records with `LIMIT` > 850000
+- After data cleaning steps; we are left with 29772 (~95% of the original) records
+
+---
+
+## Manuplate data
+
+### Handling inconsistent data
+```{r}
+# combine 4 = others and 0 = others in `EDUCATION` variable
+df.clean$EDUCATION[which(df.clean$EDUCATION == 0)] <- 4
+
+# convert variables from num to factors
+CatVars <- c("GENDER", "EDUCATION", "MARRIAGE", "AGE_CTG", "PY1", "PY2", "PY3", "PY4", "PY5", "PY6", "SATISFACTION", "FREQTRANSACTION", "PHONE", "DEPENDENT", "RSTATUS", "OTH_ACCOUNT", "CAR", "YEARSINADD", "SECONDHOME", "EMPLOYMENT", "NEW_CSTM", "CLASS")
+
+# updating variables as factors
+df.clean[CatVars] <- lapply(df.clean[CatVars], as.factor)
+
+# remove "ID" variable
+df.clean$ID <- NULL
+```
+
+---
+
+## Data partitioning
+
+```{r}
+
+# set seed = 123
+set.seed(123)
+
+# create a vector split for data partitioning (80:20 split) 
+split = sample.split(df.clean$CLASS, SplitRatio = 0.80)
+# training set: train
+train = subset(df.clean, split == TRUE)
+# test set: test
+test = subset(df.clean, split == FALSE)
+```
+
+---
+
+## Feature Selection
+
+### Check information gain
+```{r}
+# check for variable weights/information gain
+VarWt <- information.gain(CLASS~., train)
+# sort weights
+VarWt <- VarWt[order(VarWt$attr_importance), , drop = FALSE ]
+# bar plot for weights
+barplot(unlist(VarWt), 
+        names.arg = rownames(VarWt),
+        las = "2",
+        cex.names=0.6,
+        space = 0.5)
+```
+
+### Feature selection
+```{r}
+# remove AGE_CTG, because information gain for AGE is higher
+# remove CM_HIST because information gain is 0 and all the values same
+train[c("AGE_CTG", "CM_HIST")] <- NULL
+```
+
+---
+
+**Feature Selection Steps**
+
+---
+
+- Since `AGE` and `AGE_CTG` are similar variables, remove variable with lower information gain
+- Remove `CM_HIST`, because information gain is 0 and all values are same
+
+---
+
+## Data Modelling
+
+CLASS | Desc
+---|---
+0 | No Default
+1 | Default
+
+### Modelling
+
+---
+
+**SVM**
+
+```{r}
+# SVM on train data
+df.SVM <- svm(CLASS~., data = train, kernel = "radial", scale = TRUE, probability = TRUE)
+# predict the class of the test data
+df.SVM.pred <- predict(df.SVM, test)
+```
+
+---
+
+**Random Forest**
+
+```{r}
+# set seed = 123 
+set.seed(123)
+
+# RF on train data
+df.RF <- randomForest(CLASS~., data = train)
+# predict the class of the test data
+df.RF.pred <- predict(df.RF, test)
+```
+
+---
+
+**GBM**
+```{r}
+# convert CLASS variable to numeric for GBM
+train.GBM <- train
+train.GBM$CLASS <- as.numeric(train.GBM$CLASS)-1
+
+# GBM on train.GBM data
+df.GBM <- gbm(CLASS~., train.GBM, distribution = "bernoulli", n.trees = 600, cv.folds = 5)
+# Find the number of trees for the prediction
+ntree.GBM <- gbm.perf(df.GBM, method = "cv")
+# Obtain prediction probabilities using ntree.GBM
+df.GBM.prob <-  predict(df.GBM, test, n.trees = ntree.GBM, type = "response")
+# Make predictions with threshold value 0.5
+df.GBM.pred <- ifelse(df.GBM.prob > 0.5, "1", "0")
+# Save the predictions as a factor variable
+df.GBM.pred <- as.factor(df.GBM.pred)
+```
+
+---
+
+### Confusion Matrix
+```{r}
+# SVM
+( cm.SVM <- confusionMatrix(df.SVM.pred, test$CLASS, positive = '1', mode = 'prec_recall') )
+
+# Random Forest
+( cm.RF <- confusionMatrix(df.RF.pred, test$CLASS, positive = '1', mode = 'prec_recall') )
+
+# GBM
+( cm.GBM <- confusionMatrix(df.GBM.pred, test$CLASS, positive='1', mode = "prec_recall") )
+```
+
+---
+
+## Check Class Split
+
+SVM and RF have higher accuracy compared to GBM.
+
+Let's check our training and clean data for class imbalance.
+
+```{r}
+# clean data class split
+proportions(table(df.clean$CLASS))
+
+# training data class split
+proportions(table(train$CLASS))
+```
+
+Looks like our positive class = 1 is underrepresented. Hence, we cannot rely on model accuracy.
+
+---
+
+## Model Evaluation
+
+### Calculating probabilities
+```{r}
+# obtain class probabilities for RF
+df.RF.prob <- predict(df.RF, test, type = "prob")
+
+# obtain class probabilities for SVM
+df.SVM.prob <- attr(predict(df.SVM, test, probability = TRUE), "probabilities")
+```
+
+### ROC
+```{r}
+# SVM
+df.SVM.roc <- roc(test$CLASS, df.SVM.prob[,2])
+# RF
+df.RF.roc <- roc(test$CLASS, df.RF.prob[,2])
+# GBM
+df.GBM.roc <- roc(test$CLASS, df.GBM.prob)
+```
+
+### Positive Rates for plotting
+
+ Extract True Positive Rate (Sensitivities) and False Positive Rate (1-Specificities) for plotting
+
+- **sensivity = 1 - specificity**
+- *Sensitivity:* the ability of a test to correctly identify positive class
+- *Specificity:* the ability of a test to correctly identify negative class
+
+```{r}
+# SVM
+df.SVM.pr <- data.frame((1-df.SVM.roc$specificities), df.SVM.roc$sensitivities)
+# RF
+df.RF.pr <- data.frame((1-df.RF.roc$specificities), df.RF.roc$sensitivities)
+# GBM
+df.GBM.pr <- data.frame((1-df.GBM.roc$specificities), df.GBM.roc$sensitivities)
+```
+
+### ROC curve
+```{r}
+plot(df.SVM.pr, col="red", type="l",
+     xlab="False Positive Rate (1-Specificity)",
+     ylab="True Positive Rate (Sensitivity)")
+
+lines(df.RF.pr, col="blue")                #adds ROC curve for RF
+lines(df.GBM.pr, col="green")              #adds ROC curve for GBM
+
+grid(NULL, lwd = 1)
+
+abline(a = 0, b = 1, col = "lightgray") #adds a diagonal line
+
+legend("bottomright",
+c("SVM", "Random Forest", "GBM"),
+fill=c("red","blue", "green"))
+```
+
+### AUC
+```{r}
+# SVM
+auc(df.SVM.roc)
+# RF
+auc(df.RF.roc)
+# GBM
+auc(df.GBM.roc)
+```
+
+---
+
+## Data Sampling
+
+Since our positive class (default) is underrepresented. Let's try both sampling on out training data and build the models again.
+
+**Both Sampling**
+
+We'll use both sampling to have a 50:50 class split for our training data
+
+```{r}
+# both sampling
+train.bs <- ovun.sample(CLASS~., data = train, method = 'both', p=0.5, seed = 123)$data
+# check class porportions
+proportions(table(train.bs$CLASS))
+```
+
+---
+
+## Sampled Data; Modelling and Evaluation
+
+### Modelling
+
+**SVM**
+```{r}
+# SVM on train data
+bs.df.SVM <- svm(CLASS~., data = train.bs, kernel = "radial", scale = TRUE, probability = TRUE)
+# predict the class of the test data
+bs.df.SVM.pred <- predict(bs.df.SVM, test)
+```
+
+---
+
+**RF**
+```{r}
+# set seed = 123 
+set.seed(123)
+
+# RF on train data
+bs.df.RF <- randomForest(CLASS~., data = train.bs)
+# predict the class of the test data
+bs.df.RF.pred <- predict(bs.df.RF, test)
+```
+
+
+---
+
+**GBM**
+```{r}
+# convert CLASS variable to numerics for GBM
+bs.train.GBM <- train.bs
+bs.train.GBM$CLASS <- as.numeric(bs.train.GBM$CLASS)-1
+
+# GBM on train.GBM data
+bs.df.GBM <- gbm(CLASS~., bs.train.GBM, distribution = "bernoulli", n.trees = 2000, cv.folds = 5)
+# Find the number of trees for the prediction
+bs.ntree.GBM <- gbm.perf(bs.df.GBM, method = "cv")
+# Obtain prediction probabilities using ntree.GBM
+bs.df.GBM.prob <-  predict(bs.df.GBM, test, n.trees = bs.ntree.GBM, type = "response")
+# Make predictions with threshold value 0.5
+bs.df.GBM.pred <- ifelse(bs.df.GBM.prob > 0.5, "1", "0")
+# Save the predictions as a factor variable
+bs.df.GBM.pred <- as.factor(bs.df.GBM.pred)
+```
+
+---
+
+### Confusion Matrix
+```{r}
+# SVM
+( bs.cm.SVM <- confusionMatrix(bs.df.SVM.pred, test$CLASS, positive = '1', mode = 'prec_recall') )
+
+# Random Forest
+( bs.cm.RF <- confusionMatrix(bs.df.RF.pred, test$CLASS, positive = '1', mode = 'prec_recall') )
+
+# GBM
+( bs.cm.GBM <- confusionMatrix(bs.df.GBM.pred, test$CLASS, positive='1', mode = "prec_recall") )
+```
+
+### Calculating probabilities
+```{r}
+# obtain class probabilities for RF
+bs.df.RF.prob <- predict(bs.df.RF, test, type = "prob")
+
+# obtain class probabilities for SVM
+bs.df.SVM.prob <- attr(predict(bs.df.SVM, test, probability = TRUE), "probabilities")
+```
+
+### ROC
+```{r}
+# SVM
+bs.df.SVM.roc <- roc(test$CLASS, bs.df.SVM.prob[,2])
+# RF
+bs.df.RF.roc <- roc(test$CLASS, bs.df.RF.prob[,2])
+# GBM
+bs.df.GBM.roc <- roc(test$CLASS, bs.df.GBM.prob)
+```
+
+### Positive Rates for plotting
+```{r}
+# SVM
+bs.df.SVM.pr <- data.frame((1-bs.df.SVM.roc$specificities), bs.df.SVM.roc$sensitivities)
+# RF
+bs.df.RF.pr <- data.frame((1-bs.df.RF.roc$specificities), bs.df.RF.roc$sensitivities)
+# GBM
+bs.df.GBM.pr <- data.frame((1-bs.df.GBM.roc$specificities), bs.df.GBM.roc$sensitivities)
+```
+
+### ROC curve
+```{r}
+plot(bs.df.SVM.pr, col="red", type="l",
+     xlab="False Positive Rate (1-Specificity)",
+     ylab="True Positive Rate (Sensitivity)")
+
+lines(bs.df.RF.pr, col="blue")                #adds ROC curve for RF
+lines(bs.df.GBM.pr, col="green")              #adds ROC curve for GBM
+
+grid(NULL, lwd = 1)
+
+abline(a = 0, b = 1, col = "lightgray") #adds a diagonal line
+
+legend("bottomright",
+c("SVM", "Random Forest", "GBM"),
+fill=c("red","blue", "green"))
+```
+
+### AUC
+```{r}
+# SVM
+auc(bs.df.SVM.roc)
+# RF
+auc(bs.df.RF.roc)
+# GBM
+auc(bs.df.GBM.roc)
+```
+
+---
+
+## Compare Models
+```{r}
+# made a data frame of model parameters
+compare.models <- data.frame(
+  rbind(
+    Model = c("SVM", "Sampled SVM", "RF", "Sampled RF", "GBM", "Sampled GBM"),
+    Accuracy = round(c(cm.SVM$overall[1], bs.cm.SVM$overall[1], cm.RF$overall[1], bs.cm.RF$overall[1], cm.GBM$overall[1], bs.cm.GBM$overall[1]),4),
+    Kappa = round(c(cm.SVM$overall[2], bs.cm.SVM$overall[2], cm.RF$overall[2], bs.cm.RF$overall[2], cm.GBM$overall[2], bs.cm.GBM$overall[2]),4),
+    Precision = round(c(cm.SVM$byClass[5], bs.cm.SVM$byClass[5], cm.RF$byClass[5], bs.cm.RF$byClass[5], cm.GBM$byClass[5], bs.cm.GBM$byClass[5]),4),
+    Recall = round(c(cm.SVM$byClass[6], bs.cm.SVM$byClass[6], cm.RF$byClass[6], bs.cm.RF$byClass[6], cm.GBM$byClass[6], bs.cm.GBM$byClass[6]),4),
+    F1 = round(c(cm.SVM$byClass[7], bs.cm.SVM$byClass[7], cm.RF$byClass[7], bs.cm.RF$byClass[7], cm.GBM$byClass[7], bs.cm.GBM$byClass[7]),4),
+    AUC = round(c(auc(df.SVM.roc), auc(bs.df.SVM.roc), auc(df.RF.roc), auc(bs.df.RF.roc), auc(df.GBM.roc), auc(bs.df.GBM.roc)),4)))
+
+# remove col names
+colnames(compare.models) <- NULL
+
+# print model comparison data frame
+compare.models
+```
+
+Having compared three classification models (SVM, RF, and GBM) on two different data sets (original and both sampled); we found out;
+- RF and GBM out performs SVM on original data set when comparing "AUC" and "Recall"
+- Continue to tune SVM on sampled data
+- **Comparing RF and GBM on original and sampled data sets;**
+- Continue to tune RF and GBM on original and sampled data
+
+---
+
+## RF Tuning on Original Data
+
+```{r}
+# optimal mtry
+set.seed(1)
+tune.mtry <- tuneRF(x = subset(train, select = -CLASS), y = train$CLASS, ntreeTry = 500)
+mtry.RF <- tune.mtry[,1][which.min(tune.mtry[,2])]
+
+# possible values for nodesize and sampsize
+nodesize.RF <- seq(1, 10, 2)
+sampsize.RF <- floor(nrow(train)*c(0.5, 0.65, 0.8))
+
+# data frame containing all combinations 
+comb.RF <- expand.grid(mtry = mtry.RF, nodesize = nodesize.RF, sampsize = sampsize.RF)
+
+# Create an empty vector to store error values
+err.RF <- c()
+
+# loop over the rows of comb.RF and train random forest model for all values
+for (i in 1:nrow(comb.RF)){
+    set.seed(123)
+    # train a Random Forest model
+    model <- randomForest(CLASS~., train,
+                          mtry = comb.RF$mtry[i],
+                          nodesize = comb.RF$nodesize[i],
+                          sampsize = comb.RF$sampsize[i])
+    # store the error rate for the model     
+    err.RF[i] <- model$err.rate[nrow(model$err.rate), "OOB"]
+}
+
+# optimal set of hyperparmeters based on min error rate
+best.comb.RF <- which.min(err.RF)
+( comb.RF[best.comb.RF,] )
+```
+
+**Steps for RF Tuning**
+- We use three hyper parameters to tune RF. `mtry`, `nodesize`, and, `sampsize`
+- We optimise `mtry` using `tuneRF` function
+- For `nodesize`, we assume 1, 3, 5, 7, 9 as possible values
+- And, for `sampsize`, we assume 50%, 65%, and 80% of total number of training records
+- We then check `err.rate` for all the models
+- Model with minimum `err.rate` is optimal
+
+
+**Model**
+```{r}
+# set seed = 123 
+set.seed(123)
+
+# RF on train data
+df.RF.tuned <- randomForest(CLASS~.,
+                            data = train,
+                            mtry = 5,
+                            nodesize = 5,
+                            sampsize = 11911)
+# predict the class of the test data
+df.RF.pred.tuned <- predict(df.RF.tuned, test)
+```
+
+**Confusion Matrix**
+```{r}
+( cm.RF.tuned <- confusionMatrix(df.RF.pred.tuned, test$CLASS, positive = '1', mode = 'prec_recall') )
+```
+
+**ROC and AUC**
+```{r}
+# obtain class probabilities for RF
+df.RF.prob.tuned <- predict(df.RF.tuned, test, type = "prob")
+
+#roc
+df.RF.roc.tuned <- roc(test$CLASS, df.RF.prob.tuned[,2])
+
+# positive rates
+df.RF.pr.tuned <- data.frame((1-df.RF.roc.tuned$specificities), df.RF.roc.tuned$sensitivities)
+
+# AUC
+auc(df.RF.roc.tuned)
+```
+
+---
+
+## RF Tuning on Sampled Data
+
+```{r}
+# optimal mtry
+set.seed(1)
+bs.tune.mtry <- tuneRF(x = subset(train.bs, select = -CLASS), y = train.bs$CLASS, ntreeTry = 500)
+bs.mtry.RF <- bs.tune.mtry[,1][which.min(bs.tune.mtry[,2])]
+
+# use previously used possible values for nodesize and sampsize
+
+# data frame containing all combinations 
+bs.comb.RF <- expand.grid(mtry = bs.mtry.RF, nodesize = nodesize.RF, sampsize = sampsize.RF)
+
+# Create an empty vector to store error values
+bs.err.RF <- c()
+
+# loop over the rows of comb.RF and train random forest model for all values
+for (i in 1:nrow(bs.comb.RF)){
+    set.seed(123)
+    # train a Random Forest model
+    model <- randomForest(CLASS~., train.bs,
+                          mtry = bs.comb.RF$mtry[i],
+                          nodesize = bs.comb.RF$nodesize[i],
+                          sampsize = bs.comb.RF$sampsize[i])
+    # store the error rate for the model     
+    bs.err.RF[i] <- model$err.rate[nrow(model$err.rate), "OOB"]
+}
+
+# optimal set of hyperparmeters based on min error rate
+bs.best.comb.RF <- which.min(bs.err.RF)
+( bs.comb.RF[bs.best.comb.RF,] )
+```
+
+**Model**
+```{r}
+# set seed = 123 
+set.seed(123)
+
+# RF on train data
+bs.df.RF.tuned <- randomForest(CLASS~.,
+                            data = train.bs,
+                            mtry = 10,
+                            nodesize = 1,
+                            sampsize = 19057)
+# predict the class of the test data
+bs.df.RF.pred.tuned <- predict(bs.df.RF.tuned, test)
+```
+
+**Confusion Matrix**
+```{r}
+( bs.cm.RF.tuned <- confusionMatrix(bs.df.RF.pred.tuned, test$CLASS, positive = '1', mode = 'prec_recall') )
+```
+
+**ROC and AUC**
+```{r}
+# obtain class probabilities for RF
+bs.df.RF.prob.tuned <- predict(bs.df.RF.tuned, test, type = "prob")
+
+#roc
+bs.df.RF.roc.tuned <- roc(test$CLASS, bs.df.RF.prob.tuned[,2])
+
+# positive rates
+bs.df.RF.pr.tuned <- data.frame((1-bs.df.RF.roc.tuned$specificities), bs.df.RF.roc.tuned$sensitivities)
+
+# AUC
+auc(bs.df.RF.roc.tuned)
+```
+
+**Add tuned models to model comparison table**
+```{r}
+# add tuned models to model comparison table
+compare.models <- data.frame(compare.models,
+                             rbind(Model = c("RF Tuned", "Sampled RF Tuned"),
+                                   Accuracy = round(c(cm.RF.tuned$overall[1], bs.cm.RF.tuned$overall[1]),4),
+                                   Kappa = round(c(cm.RF.tuned$overall[2], bs.cm.RF.tuned$overall[2]),4),
+                                   Precision = round(c(cm.RF.tuned$byClass[5], bs.cm.RF.tuned$byClass[5]),4),
+                                   Recall = round(c(cm.RF.tuned$byClass[6], bs.cm.RF.tuned$byClass[6]),4),
+                                   F1 = round(c(cm.RF.tuned$byClass[7], bs.cm.RF.tuned$byClass[7]),4),
+                                   AUC = round(c(auc(df.RF.roc.tuned), auc(bs.df.RF.roc.tuned)),4)))
+
+# remove column names
+colnames(compare.models) <- NULL
+
+# print table
+compare.models
+```
+
+---
+
+## GBM Tuning on Original Data
+
+```{r}
+# optimal n.trees
+ntree.GBM
+
+# possible values for shrinkage
+shrinkage.GBM <- seq(0.001, 0.1, 0.004)
+
+# data frame containing all combinations 
+comb.GBM <- expand.grid(ntree = ntree.GBM,
+                        shrinkage = shrinkage.GBM)
+
+# Create an empty vector to store error values
+err.GBM <- c()
+
+# loop over the rows of comb.GBM and train GBM for all values
+for (i in 1:nrow(comb.GBM)){
+    # train a GBM
+    model <- gbm(CLASS~., train.GBM,
+                 distribution = "bernoulli",
+                 n.trees = comb.GBM$ntree[i],
+                 shrinkage = comb.GBM$shrinkage[i],
+                 cv.folds = 5)
+    # store the error rate for the model     
+    err.GBM[i] <- model$train.error[which.min(model$train.error)]
+}
+
+# optimal set of hyperparmeters based on min error rate
+best.comb.GBM <- which.min(err.GBM)
+( comb.GBM[best.comb.GBM,] )
+```
+
+**Steps for GBM Tuning**
+- We use three hyper parameters to tune RF. `n.trees` and `shrinkage`
+- We optimise `n.trees` using `gbm.perf` function
+- For `shrinkage`, we assume 0.01, 0.05, 0.09, 0.13, 0.17 as possible values
+- We then check `train.error` values for all the combinations
+- Model with min `train.error` is optimal
+
+**Model**
+```{r}
+# tuned GBM on train.GBM data
+df.GBM.tuned <- gbm(CLASS~., train.GBM, distribution = "bernoulli", n.trees = ntree.GBM, shrinkage = 0.097, cv.folds = 5)
+# Find the number of trees for the prediction
+ntree.GBM.tuned <- gbm.perf(df.GBM.tuned, method = "cv")
+# Obtain prediction probabilities using ntree.GBM
+df.GBM.prob.tuned <-  predict(df.GBM.tuned, test, n.trees = ntree.GBM.tuned, type = "response")
+# Make predictions with threshold value 0.5
+df.GBM.pred.tuned <- ifelse(df.GBM.prob.tuned > 0.5, "1", "0")
+# Save the predictions as a factor variable
+df.GBM.pred.tuned <- as.factor(df.GBM.pred.tuned)
+```
+
+**Confusion Matrix**
+```{r}
+( cm.GBM.tuned <- confusionMatrix(df.GBM.pred.tuned, test$CLASS, positive='1', mode = "prec_recall") )
+```
+
+**ROC and AUC**
+```{r}
+#roc
+df.GBM.roc.tuned <- roc(test$CLASS, df.GBM.prob.tuned)
+
+# positive rates
+df.GBM.pr.tuned <- data.frame((1-df.GBM.roc.tuned$specificities), df.GBM.roc.tuned$sensitivities)
+
+# AUC
+auc(df.GBM.roc.tuned)
+```
+
+---
+
+## GBM Tuning on Sampled Data
+
+```{r}
+# optimal n.trees
+bs.ntree.GBM
+
+# possible values for shrinkage
+bs.shrinkage.GBM <- seq(0.001, 0.1, 0.004)
+
+# data frame containing all combinations 
+bs.comb.GBM <- expand.grid(ntree = bs.ntree.GBM,
+                        shrinkage = bs.shrinkage.GBM)
+
+# Create an empty vector to store error values
+bs.err.GBM <- c()
+
+# loop over the rows of comb.GBM and train GBM for all values
+for (i in 1:nrow(bs.comb.GBM)){
+    # train a GBM
+    model <- gbm(CLASS~., bs.train.GBM,
+                 distribution = "bernoulli",
+                 n.trees = bs.comb.GBM$ntree[i],
+                 shrinkage = bs.comb.GBM$shrinkage[i],
+                 cv.folds = 5)
+    # store the error rate for the model     
+    bs.err.GBM[i] <- model$train.error[which.min(model$train.error)]
+}
+
+# optimal set of hyperparmeters based on min error rate
+bs.best.comb.GBM <- which.min(bs.err.GBM)
+( bs.comb.GBM[bs.best.comb.GBM,] )
+```
+
+**Model**
+```{r}
+# tuned GBM on train.GBM data
+bs.df.GBM.tuned <- gbm(CLASS~., bs.train.GBM, distribution = "bernoulli", n.trees = bs.ntree.GBM, shrinkage = 0.097, cv.folds = 5)
+# Find the number of trees for the prediction
+bs.ntree.GBM.tuned <- gbm.perf(bs.df.GBM.tuned, method = "cv")
+# Obtain prediction probabilities using ntree.GBM
+bs.df.GBM.prob.tuned <-  predict(bs.df.GBM.tuned, test, n.trees = bs.ntree.GBM.tuned, type = "response")
+# Make predictions with threshold value 0.5
+bs.df.GBM.pred.tuned <- ifelse(bs.df.GBM.prob.tuned > 0.5, "1", "0")
+# Save the predictions as a factor variable
+bs.df.GBM.pred.tuned <- as.factor(bs.df.GBM.pred.tuned)
+```
+
+**Confusion Matrix**
+```{r}
+( bs.cm.GBM.tuned <- confusionMatrix(bs.df.GBM.pred.tuned, test$CLASS, positive='1', mode = "prec_recall") )
+```
+
+**ROC and AUC**
+```{r}
+#roc
+bs.df.GBM.roc.tuned <- roc(test$CLASS, bs.df.GBM.prob.tuned)
+
+# positive rates
+bs.df.GBM.pr.tuned <- data.frame((1-bs.df.GBM.roc.tuned$specificities), bs.df.GBM.roc.tuned$sensitivities)
+
+# AUC
+auc(bs.df.GBM.roc.tuned)
+```
+
+---
+
+## Compare all the models
+```{r}
+# add tuned models to model comparison table
+compare.models <- data.frame(compare.models,
+                             rbind(Model = c("GBM Tuned", "Sampled GBM Tuned"),
+                                   Accuracy = round(c(cm.GBM.tuned$overall[1], bs.cm.GBM.tuned$overall[1]),4),
+                                   Kappa = round(c(cm.GBM.tuned$overall[2], bs.cm.GBM.tuned$overall[2]),4),
+                                   Precision = round(c(cm.GBM.tuned$byClass[5], bs.cm.GBM.tuned$byClass[5]),4),
+                                   Recall = round(c(cm.GBM.tuned$byClass[6], bs.cm.GBM.tuned$byClass[6]),4),
+                                   F1 = round(c(cm.GBM.tuned$byClass[7], bs.cm.GBM.tuned$byClass[7]),4),
+                                   AUC = round(c(auc(df.GBM.roc.tuned), auc(bs.df.GBM.roc.tuned)),4)))
+
+# remove column names
+colnames(compare.models) <- NULL
+
+# print table
+compare.models
+
+# ROC plot
+plot(df.SVM.pr, col="red", type="l",
+     xlab="False Positive Rate (1-Specificity)",
+     ylab="True Positive Rate (Sensitivity)")
+
+lines(df.RF.pr, col="blue")                #adds ROC curve for RF
+lines(df.GBM.pr, col="green")              #adds ROC curve for GBM
+lines(bs.df.SVM.pr, col="maroon")          #adds ROC curve for SVM Sampled 
+lines(bs.df.RF.pr, col="brown")            #adds ROC curve for RF Sampled
+lines(bs.df.GBM.pr, col="grey")           #adds ROC curve for GBM Sampled
+lines(df.RF.pr.tuned, col="cyan3")          #adds ROC curve for RF tuned
+lines(bs.df.RF.pr.tuned, col="coral2")       #adds ROC curve for RF sampled and tuned
+lines(df.GBM.pr.tuned, col="black")        #adds ROC curve for GBM tuned
+lines(bs.df.GBM.pr.tuned, col="dark grey")    ##adds ROC curve for sampled GBM tuned
+
+grid(NULL, lwd = 1)
+
+abline(a = 0, b = 1, col = "lightgray") #adds a diagonal line
+
+legend("bottomright",
+c("SVM", "Random Forest", "GBM", "SVM Sampled", "Random Forest Sampled", "GBM Sampled", "RF Tuned", "Sampled RF Tuned", "GBM Tuned", "Sampled GBM Tuned"),
+fill=c("red","blue", "green", "maroon", "brown", "grey", "cyan3", "coral2", "black", "dark grey"))
+```
+
+---
+
+## Final Model
+
+- We will evaluate our models based on `Recall` (True Positive Rate) and `ROC` curve (True Positive Rate vs False Positive Rate)
+
+```{r}
+# print table
+compare.models
+```
+
+- Because `Sampled GBM` has the highest `Recall` and relatively high `AUC`
+- `bs.df.GBM` is our final model that we'll deploy for the bank
+
+
+---
+
+## Variables
+
+Name | Description | Type
+------|------------|------
+df | Original data set | Data Frame
+df.clean | Cleaned data set for modelling | Data Frame
+CatVars | Vector of variables converted to factors | Vector
+VarWt | Information gain for all variables | Data Frame
+split | Vector for splitting data into test/train | Vector
+train | Data set for model training | Data Frame
+test | Data set for mode testing | Data Frame
+df.SVM | SVM model on train data | List
+df.SVM.pred | SVM predictions on test data | Vector
+df.RF | RF model on train data | List
+df.RF.pred | RF predictions on test data | Vector
+train.GBM | Training data for GBM | Data Frame
+df.GBM | GBM model on GBM training data | List
+ntree.GBM | optimal number of trees for df.GBM | Integer
+df.GBM.prob | GBM probability predictions on test data | Vector
+df.GBM.pred | GBM class predictions on test data | Vector
+cm.SVM | Confusion matrix for SVM | List
+cm.RF | Confusion matrix for RF | List
+cm.GBM | Confusion matrix for GBM | List
+df.RF.prob | RF probability predictions on test data  | Data Frame
+df.SVM.prob | SVM probability predictions on test data | Data Frame
+df.SVM.roc |  ROC data for SVM | List
+df.RF.roc | ROC data for RF | List
+df.GBM.roc | ROC data for GBM | List
+df.SVM.pr | Positive rates for SVM | Data Frame
+df.RF.pr | Positive rates for RF | Data Frame
+df.GBM.pr | Positive rates for GBM | Data Frame
+train.bs | sampled training data set (50:50) | Data Frame
+bs.df.SVM |SVM model on sampled train data | List
+bs.df.SVM.pred | sampled - SVM predictions on test data | Vector
+bs.df.RF | RF model on sampled train data | List
+bs.df.RF.pred | sampled - RF predictions on test data | Vector
+bs.train.GBM | Sampled training data for GBM | Data Frame
+bs.df.GBM | GBM model on sampled GBM training data | List
+bs.ntree.GBM | optimal number of trees for bs.df.GBM | Integer
+bs.df.GBM.prob | sampled - GBM probability predictions on test data | Vector
+bs.df.GBM.pred | sampled - GBM class predictions on test data | Vector
+bs.cm.SVM | Confusion matrix for sampled SVM | List
+bs.cm.RF | Confusion matrix for sampled RF | List
+bs.cm.GBM | Confusion matrix for sampled GBM | List
+bs.df.RF.prob | sampled - RF probability predictions on test data  | Data Frame
+bs.df.SVM.prob | sampled - SVM probability predictions on test data | Data Frame
+bs.df.SVM.roc |  ROC data for sampled SVM | List
+bs.df.RF.roc | ROC data for sampled RF | List
+bs.df.GBM.roc | ROC data for sampled GBM | List
+bs.df.SVM.pr | Positive rates for sampled SVM | Data Frame
+bs.df.RF.pr | Positive rates for sampled RF | Data Frame
+bs.df.GBM.pr | Positive rates for sampled GBM | Data Frame
+compare.models | Data frame comparing model parameters | Data Frame
+tune.mtry | mtrys for RF | Data Frame
+mtry.RF | Optimal mtry for RF | Vector
+nodesize.RF | Possible values for RF nodesize | Vector
+sampsize.RF | Possible values for RF sampsize | Vector
+comb.RF | Combination of all the hyperparameters for RF | Data Frame
+err.RF | Error rate for different RF hyperparameters | Vector
+best.comb.RF | Optimal hyperparameters for RF | Vector
+df.RF.tuned | Tuned RF | List
+df.RF.pred.tuned | Tuned - RF Predictions on test data | Vector
+cm.RF.tuned | Confusion matrix for tuned RF | List
+df.RF.prob.tuned | Tuned - RF probability predictions on test data | Data Frame
+df.RF.roc.tuned | ROC data for tuned GBM | List
+df.RF.pr.tuned | Positive rates for tuned RF| Data Frame
+bs.tune.mtry | mtrys for sampled RF | Data Frame
+bs.mtry.RF | Optimal mtry for sampled RF | Data Frame
+bs.comb.RF | Combination of all the hyperparameters for sampled RF | Data Frame
+bs.err.RF | Error rate for different sampled RF hyperparameters | Vector
+bs.best.comb.RF | Optimal hyperparameters for sampled RF | Vector
+bs.df.RF.tuned | Sampled - Tuned RF | List
+bs.df.RF.pred.tuned | Sampled - Tuned - RF Predictions on test data | Vector
+bs.cm.RF.tuned | Confusion matrix for sampled and tuned RF | List
+bs.df.RF.prob.tuned | Sampled -Tuned - RF probability predictions on test data | Data Frame
+bs.df.RF.roc.tuned | ROC data for sampled and tuned RF | List
+bs.df.RF.pr.tuned | Positive rates for sampled and tuned RF| Data Frame
+shrinkage.GBM | Possible values for GBM shrinkage | Vector
+comb.GBM | Combination of all the hyperparameters for GBM | Data Frame
+err.GBM | Train error for different GBM hyperparameters | Vector
+best.comb.GBM | Optimal hyperparameters for GBM | Vector
+df.GBM.tuned | Tuned GBM | List
+ntree.GBM.tuned | optimal number of trees for df.GBM.tuned | Integer
+df.GBM.prob.tuned | Tuned - GBM probability predictions on test data | Data Frame
+df.GBM.pred.tuned | Tuned - GBM Predictions on test data | Vector
+cm.GBM.tuned | Confusion matrix for tuned GBM | List
+df.GBM.roc.tuned | ROC data for tuned GBM | List
+df.GBM.pr.tuned | Positive rates for tuned GBM | Data Frame
+bs.shrinkage.GBM | Possible values for sampled GBM shrinkage | Vector
+bs.comb.GBM | Combination of all the hyperparameters for sampled GBM | Data Frame
+bs.err.GBM | Train error for different sampled GBM hyperparameters | Vector
+bs.best.comb.GBM | Optimal hyperparameters for sampled GBM | Vector
+bs.df.GBM.tuned | Tuned sampled GBM | List
+bs.ntree.GBM.tuned | optimal number of trees for bs.df.GBM.tuned | Integer
+bs.df.GBM.prob.tuned | Sampled - Tuned - GBM probability predictions on test data | Data Frame
+bs.df.GBM.pred.tuned | Sampled -Tuned - GBM Predictions on test data | Vector
+bs.cm.GBM.tuned | Confusion matrix for tuned sampled GBM | List
+bs.df.GBM.roc.tuned | ROC data for tuned sampled  GBM | List
+bs.df.GBM.pr.tuned | Positive rates for tuned sampled GBM | Data Frame
+i | index for "for" loop | Vector
+model | Temp. model for tuning | List
